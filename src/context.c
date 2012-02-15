@@ -285,14 +285,21 @@ int ffgl_poll(){
 }
 
 int ffgl_swap(){
+	unsigned char buffer[width*height*4];
+
 	glXSwapBuffers(dpy, pbuf);
 
-	unsigned char buffer[width*height*4];
 	glReadBuffer(GL_FRONT);
 	glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, buffer);
 
-	avpicture_fill((struct AVPicture*)tmp_picture, buffer, PIX_FMT_BGRA, width, height);
-	sws_scale(converter, tmp_picture->data, tmp_picture->linesize,
+	/* OpenGL stores pixels with flipped y-axis, so in the same step as converting
+	 * to YUV it also flips the pixels by reading from the end of the buffer and
+	 * moving towards the start. */
+	const uint8_t* data = buffer + width*height*4;
+	const uint8_t* tmp[4] = { data, NULL, NULL, NULL };
+	int stride[4] = { -width*4, 0, 0, 0 };
+
+	sws_scale(converter, tmp, stride,
 	          0, height, picture->data, picture->linesize);
 
 	return ffgl_write_frame(picture);
