@@ -47,6 +47,7 @@ static uint8_t *video_outbuf;
 static int video_outbuf_size;
 static AVFrame *picture, *tmp_picture;
 struct SwsContext* converter = NULL;
+static unsigned char* buffer = NULL;
 
 static void ffgl_set_error(const char* fmt, ...){
 	va_list ap;
@@ -77,9 +78,11 @@ static AVFrame *alloc_picture(int pix_fmt, int width, int height)
     return picture;
 }
 
-int ffgl_init(int w, int h){
+int ffgl_init(unsigned int w, unsigned int h, unsigned int framerate, const char* filename){
 	width = w;
 	height = h;
+
+	buffer = malloc(width*height*4);
 
 	/* initialize libavcodec, and register all codecs and formats */
 	av_register_all();
@@ -137,8 +140,6 @@ int ffgl_init(int w, int h){
 		}
 	}
 
-	const char* filename = "test.mkv";
-
 	fmt = av_guess_format(NULL, filename, NULL);
 	if (!fmt) {
 		printf("Could not deduce output format from file extension: using MPEG.\n");
@@ -158,13 +159,6 @@ int ffgl_init(int w, int h){
 	oc->oformat = fmt;
 	snprintf(oc->filename, sizeof(oc->filename), "%s", filename);
 
-	/* add the audio and video streams using the default format codecs
-   and initialize the codecs */
-	if (fmt->video_codec == CODEC_ID_NONE) {
-		fprintf(stderr, "codec is none\n");
-		exit(1);
-	}
-
 	codec = avcodec_find_encoder(CODEC_ID_H264);
 	if (!codec) {
 		fprintf(stderr, "codec not found\n");
@@ -172,21 +166,21 @@ int ffgl_init(int w, int h){
 	}
 
 	st = avformat_new_stream(oc, codec);
-	st->id = 1;
 	if (!st) {
 		fprintf(stderr, "Could not alloc stream\n");
 		exit(1);
 	}
+	st->id = 1;
 
 	c = st->codec;
 	c->codec_id = CODEC_ID_H264;
 	c->codec_type = AVMEDIA_TYPE_VIDEO;
-	c->bit_rate = 400000;
+	//c->bit_rate = 400000;
 	c->width = width;
 	c->height = height;
-	c->time_base.den = 25;
+	c->time_base.den = framerate;
 	c->time_base.num = 1;
-	c->gop_size = 12; /* emit one intra frame every twelve frames at most */
+	//c->gop_size = 12; /* emit one intra frame every twelve frames at most */
 	//c->gop_size = 25;
 	c->pix_fmt = PIX_FMT_YUV420P;
 	if(oc->oformat->flags & AVFMT_GLOBALHEADER)
@@ -202,7 +196,10 @@ int ffgl_init(int w, int h){
 	av_dump_format(oc, 0, filename, 1);
 
 	/* open the codec */
-	if (avcodec_open(c, codec) < 0) {
+	AVDictionary* conf = NULL;
+	av_dict_set(&conf, "crf", "0", 0);
+	av_dict_set(&conf, "preset", "veryslow", 0);
+	if (avcodec_open2(c, codec, &conf) < 0) {
 		fprintf(stderr, "could not open codec\n");
 		exit(1);
 	}
@@ -223,35 +220,36 @@ int ffgl_init(int w, int h){
 		exit(1);
 	}
 
-/* open the output file, if needed */
-	if (!(fmt->flags & AVFMT_NOFILE)) {
-		if (avio_open(&oc->pb, filename, URL_WRONLY) < 0) {
-			fprintf(stderr, "Could not open '%s'\n", filename);
-			exit(1);
-		}
+	/* open the output file */
+	if (avio_open(&oc->pb, filename, URL_WRONLY) < 0) {
+		fprintf(stderr, "Could not open '%s'\n", filename);
+		exit(1);
 	}
 
-/* write the stream header, if any */
-	//av_write_header(oc);
+	/* write the stream header, if any */
 	avformat_write_header(oc, NULL);
-
 
 	converter = sws_getContext(
 		width, height, PIX_FMT_BGRA,
-		width, height, PIX_FMT_YUV420P,
-		SWS_BICUBIC, NULL, NULL, NULL
+		width, height, c->pix_fmt,
+		SWS_FAST_BILINEAR, NULL, NULL, NULL
 	);
 
 	return 0;
 }
 
-int ffgl_write_frame(struct AVFrame* frame){
+/**
+ * Encode and write frame to stream.
+ * @param frame If non-null the YUV402P encoded frame is written, if null the
+ * buffer is flushed.
+ */
+static int ffgl_write_frame(const struct AVFrame* frame){
 	static int64_t frame_counter = 0;
 	picture->pts = frame_counter++;
 
-	size_t out_size = avcodec_encode_video(c, video_outbuf, video_outbuf_size, frame);
-	//printf("%zd bytes to write\n", out_size);
+	const size_t out_size = avcodec_encode_video(c, video_outbuf, video_outbuf_size, frame);
 
+	/* If out_size is zero the data was buffered */
 	if ( out_size == 0 ){
 		return 0;
 	}
@@ -261,15 +259,15 @@ int ffgl_write_frame(struct AVFrame* frame){
 	pkt.pts = pkt.dts = AV_NOPTS_VALUE;
 
 	if (c->coded_frame->pts != AV_NOPTS_VALUE){
-		pkt.pts= av_rescale_q(c->coded_frame->pts, c->time_base, st->time_base);
+		pkt.pts = av_rescale_q(c->coded_frame->pts, c->time_base, st->time_base);
 	}
 
 	if(c->coded_frame->key_frame)
 		pkt.flags |= AV_PKT_FLAG_KEY;
 
-	pkt.stream_index= st->index;
-	pkt.data= video_outbuf;
-	pkt.size= out_size;
+	pkt.stream_index = st->index;
+	pkt.data = video_outbuf;
+	pkt.size = out_size;
 
 	return av_write_frame(oc, &pkt);
 }
@@ -285,9 +283,9 @@ int ffgl_poll(){
 }
 
 int ffgl_swap(){
-	unsigned char buffer[width*height*4];
-
 	glXSwapBuffers(dpy, pbuf);
+
+	/** @todo ensure a fixed frame-rate. */
 
 	glReadBuffer(GL_FRONT);
 	glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, buffer);

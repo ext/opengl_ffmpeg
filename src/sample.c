@@ -4,7 +4,12 @@
 #include "GL/ffgl.h"
 
 int main(int argc, const char* argv[]){
-	if ( ffgl_init(800,600) != 0 ){
+	const unsigned int width = 1920;
+	const unsigned int height = 1080;
+	const unsigned int framerate = 60;
+	const float dt = (float)1.0 / framerate;
+
+	if ( ffgl_init(width, height, framerate, "test.mkv") != 0 ){
 		fprintf(stderr, "ffgl_init failed: %s\n", ffgl_get_error());
 	}
 
@@ -15,19 +20,22 @@ int main(int argc, const char* argv[]){
 	glDepthFunc( GL_LEQUAL );
 	glHint( GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST );
 
-	glViewport( 0, 0, 800, 600);
+	glViewport( 0, 0, width, height);
 	glMatrixMode( GL_PROJECTION );
 	glLoadIdentity( );
-	gluPerspective( 45.0f, 1.333, 0.1f, 100.0f );
+	gluPerspective( 45.0f, (float)width / height, 0.1f, 100.0f );
 	glMatrixMode( GL_MODELVIEW );
 	glLoadIdentity( );
 
-	for ( int i = 0; i < 2500; i++ ){
+	for ( int i = 0; i < 1800; i++ ){
+		fprintf(stderr, "frame %d   \r", i);
+		fflush(stderr);
+
     static float rtri = 0.0f;
     static float rquad = 0.0f;
 
-    rtri  += 0.5;
-    rquad += 0.9;
+    rtri  += 20.0 * dt;
+    rquad += 35.0 * dt;
 
 		glClear(GL_COLOR_BUFFER_BIT);
 
