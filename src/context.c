@@ -5,10 +5,16 @@
 #include <X11/Xlib.h>
 #include <GL/gl.h>
 #include <GL/glx.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
 
 /* for initial testing */
 #include <png.h>
 #include <zlib.h>
+
+#define STREAM_FRAME_RATE 25 /* 25 images/s */
+#define STREAM_NB_FRAMES  ((int)(STREAM_DURATION * STREAM_FRAME_RATE))
+//#define STREAM_PIX_FMT PIX_FMT_YUV420P /* default pix_fmt */
 
 typedef GLXContext (*glXCreateContextAttribsARBProc)(Display*, GLXFBConfig, GLXContext, Bool, const int*);
 typedef Bool (*glXMakeContextCurrentARBProc)(Display*, GLXDrawable, GLXDrawable, GLXContext);
@@ -32,6 +38,15 @@ static GLXPbuffer pbuf;
 static GLXContext ctx;
 static unsigned int width;
 static unsigned int height;
+static AVOutputFormat* fmt = NULL;
+static AVFormatContext* oc = NULL;
+static AVStream* st = NULL;
+static AVCodec* codec = NULL;
+static AVCodecContext* c = NULL;
+static uint8_t *video_outbuf;
+static int video_outbuf_size;
+static AVFrame *picture, *tmp_picture;
+struct SwsContext* converter = NULL;
 
 static void ffgl_set_error(const char* fmt, ...){
 	va_list ap;
@@ -42,9 +57,32 @@ static void ffgl_set_error(const char* fmt, ...){
 	va_end(ap);
 }
 
+static AVFrame *alloc_picture(int pix_fmt, int width, int height)
+{
+    AVFrame *picture;
+    uint8_t *picture_buf;
+
+    picture = avcodec_alloc_frame();
+    if (!picture)
+        return NULL;
+
+    const size_t size = avpicture_get_size(pix_fmt, width, height);
+    picture_buf = av_malloc(size);
+    if (!picture_buf) {
+        av_free(picture);
+        return NULL;
+    }
+    avpicture_fill((AVPicture *)picture, picture_buf,
+                   pix_fmt, width, height);
+    return picture;
+}
+
 int ffgl_init(int w, int h){
 	width = w;
 	height = h;
+
+	/* initialize libavcodec, and register all codecs and formats */
+	av_register_all();
 
 	/* open display */
 	if ( ! (dpy = XOpenDisplay(0)) ){
@@ -99,10 +137,146 @@ int ffgl_init(int w, int h){
 		}
 	}
 
+	const char* filename = "test.mkv";
+
+	fmt = av_guess_format(NULL, filename, NULL);
+	if (!fmt) {
+		printf("Could not deduce output format from file extension: using MPEG.\n");
+		fmt = av_guess_format("mpeg", NULL, NULL);
+	}
+	if (!fmt) {
+		fprintf(stderr, "Could not find suitable output format\n");
+		exit(1);
+	}
+
+	/* allocate the output media context */
+	oc = avformat_alloc_context();
+	if (!oc) {
+		fprintf(stderr, "Memory error\n");
+		exit(1);
+	}
+	oc->oformat = fmt;
+	snprintf(oc->filename, sizeof(oc->filename), "%s", filename);
+
+	/* add the audio and video streams using the default format codecs
+   and initialize the codecs */
+	if (fmt->video_codec == CODEC_ID_NONE) {
+		fprintf(stderr, "codec is none\n");
+		exit(1);
+	}
+
+	codec = avcodec_find_encoder(CODEC_ID_H264);
+	if (!codec) {
+		fprintf(stderr, "codec not found\n");
+		exit(1);
+	}
+
+	st = avformat_new_stream(oc, codec);
+	st->id = 1;
+	if (!st) {
+		fprintf(stderr, "Could not alloc stream\n");
+		exit(1);
+	}
+
+	c = st->codec;
+	c->codec_id = CODEC_ID_H264;
+	c->codec_type = AVMEDIA_TYPE_VIDEO;
+	c->bit_rate = 400000;
+	c->width = width;
+	c->height = height;
+	c->time_base.den = 25;
+	c->time_base.num = 1;
+	c->gop_size = 12; /* emit one intra frame every twelve frames at most */
+	//c->gop_size = 25;
+	c->pix_fmt = PIX_FMT_YUV420P;
+	if(oc->oformat->flags & AVFMT_GLOBALHEADER)
+		c->flags |= CODEC_FLAG_GLOBAL_HEADER;
+
+	/* set the output parameters (must be done even if no
+   parameters). */
+	if (av_set_parameters(oc, NULL) < 0) {
+		fprintf(stderr, "Invalid output format parameters\n");
+		exit(1);
+	}
+
+	av_dump_format(oc, 0, filename, 1);
+
+	/* open the codec */
+	if (avcodec_open(c, codec) < 0) {
+		fprintf(stderr, "could not open codec\n");
+		exit(1);
+	}
+
+	video_outbuf_size = 2000000;
+	video_outbuf = av_malloc(video_outbuf_size);
+
+	/* allocate the encoded raw picture */
+	picture = alloc_picture(c->pix_fmt, c->width, c->height);
+	if (!picture) {
+		fprintf(stderr, "Could not allocate picture\n");
+		exit(1);
+	}
+
+	tmp_picture = alloc_picture(PIX_FMT_BGRA, width, height);
+	if (!tmp_picture) {
+		fprintf(stderr, "Could not allocate temporary picture\n");
+		exit(1);
+	}
+
+/* open the output file, if needed */
+	if (!(fmt->flags & AVFMT_NOFILE)) {
+		if (avio_open(&oc->pb, filename, URL_WRONLY) < 0) {
+			fprintf(stderr, "Could not open '%s'\n", filename);
+			exit(1);
+		}
+	}
+
+/* write the stream header, if any */
+	//av_write_header(oc);
+	avformat_write_header(oc, NULL);
+
+
+	converter = sws_getContext(
+		width, height, PIX_FMT_BGRA,
+		width, height, PIX_FMT_YUV420P,
+		SWS_BICUBIC, NULL, NULL, NULL
+	);
+
 	return 0;
 }
 
+int ffgl_write_frame(struct AVFrame* frame){
+	static int64_t frame_counter = 0;
+	picture->pts = frame_counter++;
+
+	size_t out_size = avcodec_encode_video(c, video_outbuf, video_outbuf_size, frame);
+	//printf("%zd bytes to write\n", out_size);
+
+	if ( out_size == 0 ){
+		return 0;
+	}
+
+	AVPacket pkt;
+	av_init_packet(&pkt);
+	pkt.pts = pkt.dts = AV_NOPTS_VALUE;
+
+	if (c->coded_frame->pts != AV_NOPTS_VALUE){
+		pkt.pts= av_rescale_q(c->coded_frame->pts, c->time_base, st->time_base);
+	}
+
+	if(c->coded_frame->key_frame)
+		pkt.flags |= AV_PKT_FLAG_KEY;
+
+	pkt.stream_index= st->index;
+	pkt.data= video_outbuf;
+	pkt.size= out_size;
+
+	return av_write_frame(oc, &pkt);
+}
+
 int ffgl_cleanup(){
+	ffgl_write_frame(NULL); /* flush buffer */
+	av_write_trailer(oc);
 	return 0;
 }
 
@@ -117,31 +291,11 @@ int ffgl_swap(){
 	glReadBuffer(GL_FRONT);
 	glReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, buffer);
 
-	FILE *fp = fopen("test.png", "wb");
-	png_structp png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-	png_infop info_ptr = png_create_info_struct(png_ptr);
-	if (setjmp(png_jmpbuf(png_ptr))){
-		fprintf(stderr, "[write_png_file] Error during init_io\n");
-		abort();
-	}
+	avpicture_fill((struct AVPicture*)tmp_picture, buffer, PIX_FMT_BGRA, width, height);
+	sws_scale(converter, tmp_picture->data, tmp_picture->linesize,
+	          0, height, picture->data, picture->linesize);
 
-	png_init_io(png_ptr, fp);
-
-	/* write header */
-	png_set_IHDR(png_ptr, info_ptr, width, height,
-	             8, PNG_COLOR_TYPE_RGB_ALPHA, PNG_INTERLACE_NONE,
-	             PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
-
-	png_write_info(png_ptr, info_ptr);
-	//png_write_image(png_ptr, buffer);
-	for ( unsigned int y = 0; y < height; ++y ){
-		unsigned char* row = &buffer[y * width * 4];
-		png_write_row(png_ptr, row);
-	}
-
-	png_write_end(png_ptr, NULL);
-
-	return 0;
+	return ffgl_write_frame(picture);
 }
 
 const char* ffgl_get_error(){

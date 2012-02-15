@@ -22,7 +22,13 @@ int main(int argc, const char* argv[]){
 	glMatrixMode( GL_MODELVIEW );
 	glLoadIdentity( );
 
-	{
+	for ( int i = 0; i < 2500; i++ ){
+    static float rtri = 0.0f;
+    static float rquad = 0.0f;
+
+    rtri  += 0.5;
+    rquad += 0.9;
+
 		glClear(GL_COLOR_BUFFER_BIT);
 
 		/* pasta from nehe 05 */
@@ -30,7 +36,7 @@ int main(int argc, const char* argv[]){
 
     glLoadIdentity();
     glTranslatef( -1.5f, 0.0f, -6.0f );
-    //glRotatef( rtri, 0.0f, 1.0f, 0.0f );
+    glRotatef( rtri, 0.1f, 1.0f, 0.0f );
 
     glBegin( GL_TRIANGLES );
     glColor3f(1.0f, 0.0f, 0.0f); glVertex3f(  0.0f,  1.0f,  0.0f );
@@ -49,7 +55,7 @@ int main(int argc, const char* argv[]){
 
     glLoadIdentity( );
     glTranslatef( 1.5f, 0.0f, -6.0f );
-    //glRotatef( rquad, 1.0f, 0.0f, 0.0f );
+    glRotatef( rquad, 1.0f, 0.0f, 0.2f );
 
     glColor3f( 0.5f, 0.5f, 1.0f);
     glBegin( GL_QUADS );
