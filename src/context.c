@@ -73,22 +73,22 @@ static void ffgl_set_error(const char* fmt, ...){
 
 static AVFrame *alloc_picture(int pix_fmt, int width, int height)
 {
-    AVFrame *picture;
-    uint8_t *picture_buf;
+	AVFrame *picture;
+	uint8_t *picture_buf;
 
-    picture = avcodec_alloc_frame();
-    if (!picture)
-        return NULL;
+	picture = avcodec_alloc_frame();
+	if (!picture)
+		return NULL;
 
-    const size_t size = avpicture_get_size(pix_fmt, width, height);
-    picture_buf = av_malloc(size);
-    if (!picture_buf) {
-        av_free(picture);
-        return NULL;
-    }
-    avpicture_fill((AVPicture *)picture, picture_buf,
-                   pix_fmt, width, height);
-    return picture;
+	const size_t size = avpicture_get_size(pix_fmt, width, height);
+	picture_buf = av_malloc(size);
+	if (!picture_buf) {
+		av_free(picture);
+		return NULL;
+	}
+	avpicture_fill((AVPicture *)picture, picture_buf,
+	               pix_fmt, width, height);
+	return picture;
 }
 
 int ffgl_init(unsigned int w, unsigned int h, unsigned int framerate, const char* filename){
@@ -200,7 +200,7 @@ int ffgl_init(unsigned int w, unsigned int h, unsigned int framerate, const char
 		c->flags |= CODEC_FLAG_GLOBAL_HEADER;
 
 	/* set the output parameters (must be done even if no
-   parameters). */
+	   parameters). */
 	if (av_set_parameters(oc, NULL) < 0) {
 		fprintf(stderr, "Invalid output format parameters\n");
 		exit(1);
@@ -246,7 +246,7 @@ int ffgl_init(unsigned int w, unsigned int h, unsigned int framerate, const char
 		width, height, PIX_FMT_BGRA,
 		width, height, c->pix_fmt,
 		SWS_FAST_BILINEAR, NULL, NULL, NULL
-	);
+		);
 
 	return 0;
 }
