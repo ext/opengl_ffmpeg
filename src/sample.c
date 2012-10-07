@@ -5,11 +5,11 @@
 
 int main(int argc, const char* argv[]){
 	const unsigned int width = 1920;
-	const unsigned int height = 1080;
+	const unsigned int height = width / 16 * 9;
 	const unsigned int framerate = 60;
 	const float dt = (float)1.0 / framerate;
 
-	if ( ffgl_init(width, height, framerate, "test.mkv") != 0 ){
+	if ( ffgl_init(width, height, framerate, "test.mp4") != 0 ){
 		fprintf(stderr, "ffgl_init failed: %s\n", ffgl_get_error());
 	}
 
@@ -19,6 +19,7 @@ int main(int argc, const char* argv[]){
 	glEnable( GL_DEPTH_TEST );
 	glDepthFunc( GL_LEQUAL );
 	glHint( GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST );
+	glEnable( GL_MULTISAMPLE );
 
 	glViewport( 0, 0, width, height);
 	glMatrixMode( GL_PROJECTION );
